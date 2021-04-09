@@ -1,0 +1,10 @@
+add send/receive move function
+have starting fen hardcoded
+send fen out to new clients
+maybe add server side move validation
+add piece blew up to move function
+add skip turn to move function
+add restart game function
+add play by yourself function (disconnect from server)
+add create minesweeper board function
+add set game over function?
