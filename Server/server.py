@@ -3,9 +3,6 @@ import websockets
 import json
 import traceback
 
-# The set of clients connected to this server. It is used to distribute
-# messages.
-
 
 class GameState():
 	def __init__(self):
@@ -13,15 +10,48 @@ class GameState():
 		self.whitePlayer = None
 		self.blackPlayer = None
 
+	def setColor(self, client, color):
+		if color == "w":
+			if self.whitePlayer is None:
+				self.whitePlayer = client
+			else:
+				return "White is already being played by another player."
+		elif color == "b":
+			if self.blackPlayer is None:
+				self.blackPlayer = client
+			else:
+				return "Black is already being played by another player."
+		else:
+			return "Invalid color."
+
 
 class Api():
 	def __init__(self, server, gameState):
 		self.server = server
 		self.gameState = gameState
 
-	async def echoAll(self, args):
-		for client in self.server.clients.keys():
-			await self.server.send(client, args)
+	async def echoAll(self, client, args):
+		for c in self.server.clients:
+			await self.server.send(c, args)
+
+	async def claimColor(self, client, args):
+		if "color" in args:
+			error = self.gameState(client, args["color"])
+			if error:
+				return {
+					"error": error
+				}
+		else:
+			return {
+				"error": "Invalid arguments"
+			}
+
+		if self.gameState.whitePlayer and self.gameState.blackPlayer:
+			await self.server.sendAll({"action": "startGame"})
+
+		return {
+			"response": "Success"
+		}
 
 
 class Server():
@@ -47,9 +77,10 @@ class Server():
 					response = {}
 					try:
 						if "args" in message:
-							await Api.__dict__[message["action"]](self.api, message["args"])
+							response = await Api.__dict__[message["action"]](self.api, websocket, message["args"])
 						else:
-							await Api.__dict__[message["action"]](self.api)
+							response = await Api.__dict__[message["action"]](self.api, websocket)
+
 					except TypeError:
 						traceback.print_exc()
 						response = {
@@ -60,6 +91,8 @@ class Server():
 						response = {
 							"error": "Invalid command."
 						}
+
+					print(response)
 					if response:
 						await self.send(websocket, response)
 				else:
@@ -72,6 +105,10 @@ class Server():
 
 	async def send(self, websocket, message):
 		await websocket.send(json.dumps(message))
+
+	async def sendAll(self, message):
+		for c in self.clients:
+			await self.send(c, message)
 
 	async def receive(self, websocket):
 		return json.loads(await websocket.recv())
