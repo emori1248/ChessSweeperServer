@@ -32,7 +32,10 @@ class Api():
 
 	async def echoAll(self, client, args):
 		for c in self.server.clients:
-			await self.server.send(c, args)
+			await self.server.send(c, {
+				"action": "echoAll",
+				"args": args
+			})
 
 	async def claimColor(self, client, args):
 		if "color" in args:
