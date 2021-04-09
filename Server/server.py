@@ -50,7 +50,7 @@ class Api():
 			await self.server.sendAll({"action": "startGame"})
 
 		return {
-			"response": "Success"
+			"success": True
 		}
 
 
@@ -60,26 +60,26 @@ class Server():
 		self.gameState = GameState()
 		self.api = Api(self, self.gameState)
 
-	async def client_handler(self, websocket, path):
-		print('New client', websocket)
-		self.clients.append(websocket)
+	async def client_handler(self, client, path):
+		print('New client', client)
+		self.clients.append(client)
 		print(f' ({len(self.clients)} existing clients)')
 
 		# Handle messages from this client
 		try:
 			while True:
-				message = await self.receive(websocket)
+				message = await self.receive(client)
 
 				if message is None:
-					self.clients.remove(websocket)
-					print('Client closed connection', websocket)
+					self.clients.remove(client)
+					print('Client closed connection', client)
 				elif "action" in message:
 					response = {}
 					try:
 						if "args" in message:
-							response = await Api.__dict__[message["action"]](self.api, websocket, message["args"])
+							response = await Api.__dict__[message["action"]](self.api, client, message["args"])
 						else:
-							response = await Api.__dict__[message["action"]](self.api, websocket)
+							response = await Api.__dict__[message["action"]](self.api, client)
 
 					except TypeError:
 						traceback.print_exc()
@@ -92,16 +92,18 @@ class Server():
 							"error": "Invalid command."
 						}
 
-					print(response)
 					if response:
-						await self.send(websocket, response)
+						await self.send(client, {
+							"action": message["action"],
+							"args": response
+						})
 				else:
 					# Only supports action format
-					await self.send(websocket, {"error": "Invalid packet format"})
+					await self.send(client, {"error": "Invalid packet format"})
 
 		except websockets.exceptions.ConnectionClosedOK:
-			self.clients.remove(websocket)
-			print('Client closed connection', websocket)
+			self.clients.remove(client)
+			print('Client closed connection', client)
 
 	async def send(self, websocket, message):
 		await websocket.send(json.dumps(message))
