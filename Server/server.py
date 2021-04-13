@@ -138,17 +138,22 @@ class Api():
 		}
 
 	async def resetBoard(self, client):
-		self.gameState.__init__()
-		await self.server.sendAll({
-			"action": "resetBoard",
-			"args": {
-				"fen": self.gameState.game.fen(),
-				"mineCount": len(self.gameState.mineLocs),
-				"prevMove": self.gameState.prevMove,
-				"whitePlayer": bool(self.gameState.whitePlayer),
-				"blackPlayer": bool(self.gameState.blackPlayer)
+		if client == self.gameState.whitePlayer or client == self.gameState.blackPlayer:
+			self.gameState.__init__()
+			await self.server.sendAll({
+				"action": "resetBoard",
+				"args": {
+					"fen": self.gameState.game.fen(),
+					"mineCount": len(self.gameState.mineLocs),
+					"prevMove": self.gameState.prevMove,
+					"whitePlayer": bool(self.gameState.whitePlayer),
+					"blackPlayer": bool(self.gameState.blackPlayer)
+				}
+			})
+		else:
+			return {
+				"error": "Only registered players can reset the game."
 			}
-		})
 
 	async def move(self, client, args):
 		if self.gameState.game.turn == chess.WHITE:
