@@ -4,6 +4,7 @@ import json
 import traceback
 import random
 import chess
+import math
 
 
 class GameState():
@@ -13,6 +14,9 @@ class GameState():
 		self.prevMove = {}
 		self.whitePlayer = None
 		self.blackPlayer = None
+		self.timeControls = [300, 5]
+		self.whiteTimer = self.timeControls[0]
+		self.blackTimer = self.timeControls[0]
 
 		self.genMSBoard()
 
@@ -42,6 +46,41 @@ class GameState():
 			loc = random.randint(squareCount / 2, squareCount - 1)
 			if not loc in self.mineLocs:
 				self.mineLocs.append(loc)
+
+	def getSinkSquares(self, squares, findAdj={}):
+		if not findAdj:  #this argument is only meant to be used in recursive calls
+			findAdj = squares.copy()
+
+		for k in tuple(findAdj):
+			index = chess.parse_square(k)
+			mineCount = 0
+			adj = []
+			for i in [-9, -7, 7, 9]:  #corners
+				if index + i >= 0 and index + i < 64 and abs(math.floor((index+i) / 8) - math.floor(index / 8)) == 1 and abs((index+i) % 8 - index%8) == 1:  #row and column distance is 1
+					if index + i in self.mineLocs:
+						mineCount += 1
+					adj.append(index + i)
+			for i in [-8, 8]:  #above and below
+				if index + i >= 0 and index + i < 64 and abs(math.floor((index+i) / 8) - math.floor(index / 8)) == 1 and abs((index+i) % 8 - index%8) == 0:  #row distance is 1, column distance is 0
+					if index + i in self.mineLocs:
+						mineCount += 1
+					adj.append(index + i)
+			for i in [-1, 1]:  #left and right
+				if index + i >= 0 and index + i < 64 and abs(math.floor((index+i) / 8) - math.floor(index / 8)) == 0 and abs((index+i) % 8 - index%8) == 1:  #row distance is 0, column distance is 1
+					if index + i in self.mineLocs:
+						mineCount += 1
+					adj.append(index + i)
+
+			squares[k] = mineCount
+			if mineCount == 0:
+				adjDict = {chess.square_name(key): val
+							for key, val in dict.fromkeys(adj).items()}
+				for i in adj:  #simple solution
+					j = chess.square_name(i)
+					if j in squares.keys():
+						del adjDict[j]
+				if adjDict:
+					self.getSinkSquares(squares, adjDict)
 
 
 class Api():
@@ -112,32 +151,90 @@ class Api():
 		})
 
 	async def move(self, client, args):
+		print(args["timer"])
+		if self.gameState.game.turn == chess.WHITE:
+			self.gameState.whiteTimer = args["timer"]
+		else:
+			self.gameState.blackTimer = args["timer"]
 		if "skip" in args and args["skip"]:
 			self.gameState.game.push(chess.Move.null())
-			await self.server.sendAll({"action": "moveAll"}, exclude=[client])
+			await self.server.sendAll({
+				"action": "moveAll",
+				"args": {
+					"timers": {
+						"whiteTimer": self.gameState.whiteTimer,
+						"blackTimer": self.gameState.blackTimer
+					}
+				}
+			})
 		else:
 			self.gameState.game.push(chess.Move.from_uci(f'{args["move"]["from"]}{args["move"]["to"]}{args["move"]["promotion"] if "promotion" in args["move"] else ""}'))
 			self.gameState.prevMove = args["move"]
 
+			extraInfo = {}
+
+			rank = "8" if args["move"]["color"] == "b" else "1"
+			if "k" in args["move"]["flags"]:  #kingside castle
+				square = chess.parse_square(f"f{rank}")
+				if square in self.gameState.mineLocs:
+					self.gameState.game.remove_piece_at(square)
+				extraInfo["kcMine"] = True
+				extraInfo["resetMS"] = True
+			if "q" in args["move"]["flags"]:  #queenside castle
+				square = chess.parse_square(f"d{rank}")
+				if square in self.gameState.mineLocs:
+					self.gameState.game.remove_piece_at(square)
+				extraInfo["qcMine"] = True
+				extraInfo["resetMS"] = True
+
+			if chess.parse_square(args["move"]["to"]) in self.gameState.mineLocs:
+				self.gameState.game.remove_piece_at(chess.parse_square(args["move"]["to"]))
+				extraInfo["mine"] = True
+				if args["move"]["piece"] != "k":
+					if not self.gameState.game.mirror().is_check():
+						self.gameState.genMSBoard()
+						extraInfo["resetMS"] = True
+			else:
+				if "captured" in args["move"]:
+					self.gameState.genMSBoard()
+					extraInfo["resetMS"] = True
+
 			await self.server.sendAll({
 				"action": "moveAll",
-				"args": args["move"]
-			}, exclude=[client])
-
-		return {
-			"success": True
-		}
+				"args": {
+					"move": args["move"],
+					"extraInfo": extraInfo,
+					"timers": {
+						"whiteTimer": self.gameState.whiteTimer,
+						"blackTimer": self.gameState.blackTimer
+					}
+				}
+			})
 
 	async def resetMS(self, client):
 		self.gameState.genMSBoard()
 
 	async def sink(self, client, args):
-		print(args)
+		squares = {}
+		if chess.parse_square(args["position"]) in self.gameState.mineLocs:
+			squares[args["position"]] = "mine"
+			await self.move(client, {
+				"skip": True,
+				"timer": args["timer"]
+			})
+		else:
+			squares[args["position"]] = None
+			self.gameState.getSinkSquares(squares)
+
 		return {
 			"success": True,
-			"squares": [{
-				"position": args["square"]
-			}]
+			"squares": squares
+		}
+
+	async def getTimer(self, client):
+		return {
+			"success": True,
+			"timeControls": self.gameState.timeControls
 		}
 
 
@@ -152,7 +249,7 @@ class Server():
 		self.clients.append(client)
 		print(f' ({len(self.clients)} existing clients)')
 		await self.send(client, {
-			"action": "setFen",
+			"action": "setBoard",
 			"args": {
 				"fen": self.gameState.game.fen(),
 				"mineCount": len(self.gameState.mineLocs),
@@ -202,18 +299,24 @@ class Server():
 			self.clients.remove(client)
 			if client == self.gameState.whitePlayer:
 				self.gameState.whitePlayer = None
+				self.gameState.__init__()
 				await self.sendAll({
 					"action": "whiteClaimed",
 					"args": {
-						"taken": False
+						"taken": False,
+						"fen": self.gameState.game.fen(),
+						"mineCount": len(self.gameState.mineLocs)
 					}
 				})
 			if client == self.gameState.blackPlayer:
 				self.gameState.blackPlayer = None
+				self.gameState.__init__()
 				await self.sendAll({
 					"action": "blackClaimed",
 					"args": {
-						"taken": False
+						"taken": False,
+						"fen": self.gameState.game.fen(),
+						"mineCount": len(self.gameState.mineLocs)
 					}
 				})
 			print('Client closed connection', client)
