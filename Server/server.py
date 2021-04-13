@@ -269,7 +269,11 @@ class Server():
 				elif "action" in message:
 					response = {}
 					try:
-						if "args" in message:
+						if "__" in message["action"]:
+							response = {
+								"error": "Can't invoke built-in functions."
+							}
+						elif "args" in message:
 							response = await Api.__dict__[message["action"]](self.api, client, message["args"])
 						else:
 							response = await Api.__dict__[message["action"]](self.api, client)
