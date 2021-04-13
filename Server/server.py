@@ -151,7 +151,6 @@ class Api():
 		})
 
 	async def move(self, client, args):
-		print(args["timer"])
 		if self.gameState.game.turn == chess.WHITE:
 			self.gameState.whiteTimer = args["timer"]
 		else:
@@ -231,7 +230,7 @@ class Api():
 			"squares": squares
 		}
 
-	async def getTimer(self, client):
+	async def getControls(self, client):
 		return {
 			"success": True,
 			"timeControls": self.gameState.timeControls
@@ -295,7 +294,7 @@ class Server():
 					# Only supports action format
 					await self.send(client, {"error": "Invalid packet format"})
 
-		except websockets.exceptions.ConnectionClosedOK:
+		except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError):
 			self.clients.remove(client)
 			if client == self.gameState.whitePlayer:
 				self.gameState.whitePlayer = None
