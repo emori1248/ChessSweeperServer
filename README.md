@@ -8,4 +8,4 @@
 
 ## Usage
 
-`pip install` required dependencies and run Server/run.py
+Run `Server/run.py`
