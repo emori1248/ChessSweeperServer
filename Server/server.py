@@ -37,7 +37,7 @@ class GameState():
 			return "Invalid color."
 
 	def genMSBoard(self):
-		mineCount = 14
+		mineCount = 12
 		squareCount = 64
 		self.mineLocs = []
 		while len(self.mineLocs) < mineCount / 2:
