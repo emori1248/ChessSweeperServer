@@ -17,6 +17,8 @@ class GameState():
 		self.timeControls = [300, 5]
 		self.whiteTimer = self.timeControls[0]
 		self.blackTimer = self.timeControls[0]
+		self.whiteFreeSink = True
+		self.blackFreeSink = True
 
 		self.genMSBoard()
 
@@ -35,7 +37,7 @@ class GameState():
 			return "Invalid color."
 
 	def genMSBoard(self):
-		mineCount = 16
+		mineCount = 14
 		squareCount = 64
 		self.mineLocs = []
 		while len(self.mineLocs) < mineCount / 2:
@@ -167,9 +169,11 @@ class Api():
 			self.gameState.prevMove = {}
 
 			extraInfo["turnCount"] = self.gameState.game.fullmove_number
-			if self.gameState.game.fullmove_number > 1 and (self.gameState.game.fullmove_number - 1) % 10 == 0:
+			if (self.gameState.game.ply()) % 20 == 0:
 				self.gameState.genMSBoard()
 				extraInfo["resetMS"] = True
+				self.gameState.whiteFreeSink = True
+				self.gameState.blackFreeSink = True
 
 			await self.server.sendAll({
 				"action": "moveAll",
@@ -202,9 +206,11 @@ class Api():
 				extraInfo["mine"] = True
 
 			extraInfo["turnCount"] = self.gameState.game.fullmove_number
-			if self.gameState.game.fullmove_number > 1 and (self.gameState.game.fullmove_number - 1) % 10 == 0:
+			if (self.gameState.game.ply()) % 20 == 0:
 				self.gameState.genMSBoard()
 				extraInfo["resetMS"] = True
+				self.gameState.whiteFreeSink = True
+				self.gameState.blackFreeSink = True
 
 			await self.server.sendAll({
 				"action": "moveAll",
@@ -218,24 +224,34 @@ class Api():
 				}
 			})
 
-	async def resetMS(self, client):
-		self.gameState.genMSBoard()
+	# async def resetMS(self, client):
+	# 	self.gameState.genMSBoard()
 
 	async def sink(self, client, args):
 		squares = {}
+		reveal = True
 		if chess.parse_square(args["position"]) in self.gameState.mineLocs:
 			squares[args["position"]] = "mine"
-			await self.move(client, {
-				"skip": True,
-				"timer": args["timer"]
-			})
+			if not (client == self.gameState.whitePlayer and self.gameState.whiteFreeSink) and not (client == self.gameState.blackPlayer and self.gameState.blackFreeSink):
+				await self.move(client, {
+					"skip": True,
+					"timer": args["timer"]
+				})
+				if (self.gameState.game.ply()) % 20 == 0:
+					reveal = False
 		else:
 			squares[args["position"]] = None
 			self.gameState.getSinkSquares(squares)
 
+		if client == self.gameState.whitePlayer and self.gameState.whiteFreeSink:
+			self.gameState.whiteFreeSink = False
+		elif client == self.gameState.blackPlayer and self.gameState.blackFreeSink:
+			self.gameState.blackFreeSink = False
+
 		return {
 			"success": True,
-			"squares": squares
+			"squares": squares,
+			"reveal": reveal
 		}
 
 	async def getControls(self, client):
