@@ -35,7 +35,7 @@ class GameState():
 			return "Invalid color."
 
 	def genMSBoard(self):
-		mineCount = 12
+		mineCount = 16
 		squareCount = 64
 		self.mineLocs = []
 		while len(self.mineLocs) < mineCount / 2:
@@ -160,48 +160,51 @@ class Api():
 			self.gameState.whiteTimer = args["timer"]
 		else:
 			self.gameState.blackTimer = args["timer"]
+
+		extraInfo = {}
 		if "skip" in args and args["skip"]:
 			self.gameState.game.push(chess.Move.null())
+			self.gameState.prevMove = {}
+
+			extraInfo["turnCount"] = self.gameState.game.fullmove_number
+			if self.gameState.game.fullmove_number > 1 and (self.gameState.game.fullmove_number - 1) % 10 == 0:
+				self.gameState.genMSBoard()
+				extraInfo["resetMS"] = True
+
 			await self.server.sendAll({
 				"action": "moveAll",
 				"args": {
 					"timers": {
 						"whiteTimer": self.gameState.whiteTimer,
 						"blackTimer": self.gameState.blackTimer
-					}
+					},
+					"extraInfo": extraInfo
 				}
 			})
 		else:
 			self.gameState.game.push(chess.Move.from_uci(f'{args["move"]["from"]}{args["move"]["to"]}{args["move"]["promotion"] if "promotion" in args["move"] else ""}'))
 			self.gameState.prevMove = args["move"]
 
-			extraInfo = {}
-
 			rank = "8" if args["move"]["color"] == "b" else "1"
 			if "k" in args["move"]["flags"]:  #kingside castle
 				square = chess.parse_square(f"f{rank}")
 				if square in self.gameState.mineLocs:
 					self.gameState.game.remove_piece_at(square)
-				extraInfo["kcMine"] = True
-				extraInfo["resetMS"] = True
+					extraInfo["kcMine"] = True
 			if "q" in args["move"]["flags"]:  #queenside castle
 				square = chess.parse_square(f"d{rank}")
 				if square in self.gameState.mineLocs:
 					self.gameState.game.remove_piece_at(square)
-				extraInfo["qcMine"] = True
-				extraInfo["resetMS"] = True
+					extraInfo["qcMine"] = True
 
 			if chess.parse_square(args["move"]["to"]) in self.gameState.mineLocs:
 				self.gameState.game.remove_piece_at(chess.parse_square(args["move"]["to"]))
 				extraInfo["mine"] = True
-				if args["move"]["piece"] != "k":
-					if not self.gameState.game.mirror().is_check():
-						self.gameState.genMSBoard()
-						extraInfo["resetMS"] = True
-			else:
-				if "captured" in args["move"]:
-					self.gameState.genMSBoard()
-					extraInfo["resetMS"] = True
+
+			extraInfo["turnCount"] = self.gameState.game.fullmove_number
+			if self.gameState.game.fullmove_number > 1 and (self.gameState.game.fullmove_number - 1) % 10 == 0:
+				self.gameState.genMSBoard()
+				extraInfo["resetMS"] = True
 
 			await self.server.sendAll({
 				"action": "moveAll",
