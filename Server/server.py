@@ -158,10 +158,8 @@ class Api():
 			}
 
 	async def move(self, client, args):
-		if self.gameState.game.turn == chess.WHITE:
-			self.gameState.whiteTimer = args["timer"]
-		else:
-			self.gameState.blackTimer = args["timer"]
+		self.gameState.whiteTimer = args["timers"]["whiteTimer"]
+		self.gameState.blackTimer = args["timers"]["blackTimer"]
 
 		extraInfo = {}
 		if "skip" in args and args["skip"]:
@@ -235,7 +233,7 @@ class Api():
 			if not (client == self.gameState.whitePlayer and self.gameState.whiteFreeSink) and not (client == self.gameState.blackPlayer and self.gameState.blackFreeSink):
 				await self.move(client, {
 					"skip": True,
-					"timer": args["timer"]
+					"timers": args["timers"]
 				})
 				if (self.gameState.game.ply()) % 20 == 0:
 					reveal = False
