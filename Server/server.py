@@ -1,10 +1,10 @@
-import asyncio
 import websockets
 import json
 import traceback
 import random
 import chess
 import math
+import string
 
 
 class GameState():
@@ -15,6 +15,7 @@ class GameState():
 		self.whitePlayer = None
 		self.blackPlayer = None
 		self.timeControls = [300, 5]
+		self.mineCount = 12
 		self.whiteTimer = self.timeControls[0]
 		self.blackTimer = self.timeControls[0]
 		self.whiteFreeSink = True
@@ -37,14 +38,13 @@ class GameState():
 			return "Invalid color."
 
 	def genMSBoard(self):
-		mineCount = 12
 		squareCount = 64
 		self.mineLocs = []
-		while len(self.mineLocs) < mineCount / 2:
+		while len(self.mineLocs) < self.mineCount / 2:
 			loc = random.randint(0, squareCount/2 - 1)
 			if not loc in self.mineLocs:
 				self.mineLocs.append(loc)
-		while len(self.mineLocs) < mineCount:
+		while len(self.mineLocs) < self.mineCount:
 			loc = random.randint(squareCount / 2, squareCount - 1)
 			if not loc in self.mineLocs:
 				self.mineLocs.append(loc)
@@ -55,26 +55,26 @@ class GameState():
 
 		for k in tuple(findAdj):
 			index = chess.parse_square(k)
-			mineCount = 0
+			minesFound = 0
 			adj = []
 			for i in [-9, -7, 7, 9]:  #corners
 				if index + i >= 0 and index + i < 64 and abs(math.floor((index+i) / 8) - math.floor(index / 8)) == 1 and abs((index+i) % 8 - index%8) == 1:  #row and column distance is 1
 					if index + i in self.mineLocs:
-						mineCount += 1
+						minesFound += 1
 					adj.append(index + i)
 			for i in [-8, 8]:  #above and below
 				if index + i >= 0 and index + i < 64 and abs(math.floor((index+i) / 8) - math.floor(index / 8)) == 1 and abs((index+i) % 8 - index%8) == 0:  #row distance is 1, column distance is 0
 					if index + i in self.mineLocs:
-						mineCount += 1
+						minesFound += 1
 					adj.append(index + i)
 			for i in [-1, 1]:  #left and right
 				if index + i >= 0 and index + i < 64 and abs(math.floor((index+i) / 8) - math.floor(index / 8)) == 0 and abs((index+i) % 8 - index%8) == 1:  #row distance is 0, column distance is 1
 					if index + i in self.mineLocs:
-						mineCount += 1
+						minesFound += 1
 					adj.append(index + i)
 
-			squares[k] = mineCount
-			if mineCount == 0:
+			squares[k] = minesFound
+			if minesFound == 0:
 				adjDict = {chess.square_name(key): val
 							for key, val in dict.fromkeys(adj).items()}
 				for i in adj:  #simple solution
@@ -85,10 +85,11 @@ class GameState():
 					self.getSinkSquares(squares, adjDict)
 
 
-class Api():
-	def __init__(self, server, gameState):
+class Lobby():
+	def __init__(self, server, lobbyClients):
+		self.gameState = GameState()
 		self.server = server
-		self.gameState = gameState
+		self.lobbyClients = lobbyClients
 
 	async def echoAll(self, client, args):
 		for c in self.server.clients:
@@ -261,24 +262,14 @@ class Api():
 
 class Server():
 	def __init__(self):
-		self.clients = []
-		self.gameState = GameState()
-		self.api = Api(self, self.gameState)
+		self.clients = {} #<WebSocketServerProtocol>: lobby code
+		self.lobbies = {} #lobby code: Lobby
 
 	async def client_handler(self, client, path):
 		print('New client', client)
-		self.clients.append(client)
+		self.clients[client] = -1
+		# self.clients.append(client)
 		print(f' ({len(self.clients)} existing clients)')
-		await self.send(client, {
-			"action": "setBoard",
-			"args": {
-				"fen": self.gameState.game.fen(),
-				"mineCount": len(self.gameState.mineLocs),
-				"prevMove": self.gameState.prevMove,
-				"whitePlayer": bool(self.gameState.whitePlayer),
-				"blackPlayer": bool(self.gameState.blackPlayer)
-			}
-		})
 
 		# Handle messages from this client
 		try:
@@ -286,19 +277,32 @@ class Server():
 				message = await self.receive(client)
 
 				if message is None:
-					self.clients.remove(client)
+					del self.clients[client]
+					# self.clients.remove(client)
 					print('Client closed connection', client)
 				elif "action" in message:
 					response = {}
 					try:
-						if "__" in message["action"]:
+						if message["action"] == "joinLobby":
+							response = self.joinLobby(message, client)
+							if "lobbyCode" in response:
+								await self.setBoard(client)
+						elif message["action"] == "createLobby":
+							response = self.createLobby(client)
+							if "lobbyCode" in response:
+								await self.setBoard(client)
+						elif self.clients[client] == -1:
+							response = {
+								"error": "Not in a lobby"
+							}
+						elif "__" in message["action"]:
 							response = {
 								"error": "Can't invoke built-in functions."
 							}
 						elif "args" in message:
-							response = await Api.__dict__[message["action"]](self.api, client, message["args"])
+							response = await Lobby.__dict__[message["action"]](self.lobbies[self.clients[client]], client, message["args"])
 						else:
-							response = await Api.__dict__[message["action"]](self.api, client)
+							response = await Lobby.__dict__[message["action"]](self.lobbies[self.clients[client]], client)
 
 					except TypeError:
 						traceback.print_exc()
@@ -321,27 +325,34 @@ class Server():
 					await self.send(client, {"error": "Invalid packet format"})
 
 		except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError):
-			self.clients.remove(client)
-			if client == self.gameState.whitePlayer:
-				self.gameState.whitePlayer = None
-				self.gameState.__init__()
+			lobbyOfClient = self.lobbies[self.clients[client]]
+			lobbyOfClient.lobbyClients.remove(client)
+			if len(lobbyOfClient.lobbyClients) == 0:
+				print("Closing lobby", self.clients[client])
+				del self.lobbies[self.clients[client]]
+			del self.clients[client]
+			# self.clients.remove(client)
+			clientGS = lobbyOfClient.gameState
+			if client == clientGS.whitePlayer:
+				clientGS.whitePlayer = None
+				clientGS.__init__()
 				await self.sendAll({
 					"action": "whiteClaimed",
 					"args": {
 						"taken": False,
-						"fen": self.gameState.game.fen(),
-						"mineCount": len(self.gameState.mineLocs)
+						"fen": clientGS.game.fen(),
+						"mineCount": clientGS.mineCount
 					}
 				})
-			if client == self.gameState.blackPlayer:
-				self.gameState.blackPlayer = None
-				self.gameState.__init__()
+			if client == clientGS.blackPlayer:
+				clientGS.blackPlayer = None
+				clientGS.__init__()
 				await self.sendAll({
 					"action": "blackClaimed",
 					"args": {
 						"taken": False,
-						"fen": self.gameState.game.fen(),
-						"mineCount": len(self.gameState.mineLocs)
+						"fen": clientGS.game.fen(),
+						"mineCount": clientGS.mineCount
 					}
 				})
 			print('Client closed connection', client)
@@ -356,3 +367,56 @@ class Server():
 
 	async def receive(self, client):
 		return json.loads(await client.recv())
+
+	def joinLobby(self, message, client):
+		response = {}
+		lobbyCode = message["args"]["lobbyCode"]
+		if lobbyCode in self.lobbies:
+			self.addToLobby(client, lobbyCode)
+			response = {
+				"lobbyCode": lobbyCode
+			}
+		else:
+			response = {
+				"error": "Lobby does not exist"
+			}
+		return response
+
+	def createLobby(self, client):
+		response = {}
+		lobbyCode = ""
+		while True:
+			lobbyCode = "".join(random.choices(string.ascii_letters + string.digits, k=6))
+			if not lobbyCode in self.lobbies:
+				break
+		self.addToLobby(client, lobbyCode)
+		response = {
+			"lobbyCode": lobbyCode
+		}
+		return response
+	
+	def addToLobby(self, client, lobbyCode):
+		if not self.clients[client] == -1:
+			lobbyOfClient = self.lobbies[self.clients[client]]
+			lobbyOfClient.lobbyClients.remove(client)
+			if len(lobbyOfClient.lobbyClients) == 0:
+				print("Closing lobby", self.clients[client])
+				del self.lobbies[self.clients[client]]
+		self.clients[client] = lobbyCode
+		if lobbyCode in self.lobbies:
+			self.lobbies[lobbyCode].lobbyClients.append(client)
+		else:
+			self.lobbies[lobbyCode] = Lobby(self, [client])
+
+	async def setBoard(self, client):
+		clientGS = self.lobbies[self.clients[client]].gameState
+		await self.send(client, {
+			"action": "setBoard",
+			"args": {
+				"fen": clientGS.game.fen(),
+				"mineCount": clientGS.mineCount,
+				"prevMove": clientGS.prevMove,
+				"whitePlayer": bool(clientGS.whitePlayer),
+				"blackPlayer": bool(clientGS.blackPlayer)
+			}
+		})
