@@ -9,13 +9,15 @@ import string
 
 class GameState():
 	def __init__(self):
+		self.timeControls = [300, 5]
+		self.mineCount = 12
+		self.movesUntilReset = 10
+
 		self.game = chess.Board()
 		self.mineLocs = []
 		self.prevMove = {}
 		self.whitePlayer = None
 		self.blackPlayer = None
-		self.timeControls = [300, 5]
-		self.mineCount = 12
 		self.whiteTimer = self.timeControls[0]
 		self.blackTimer = self.timeControls[0]
 		self.whiteFreeSink = True
@@ -84,6 +86,20 @@ class GameState():
 				if adjDict:
 					self.getSinkSquares(squares, adjDict)
 
+	def reset(self, removePlayers=True):
+		self.game = chess.Board()
+		self.mineLocs = []
+		self.prevMove = {}
+		if removePlayers:
+			self.whitePlayer = None
+			self.blackPlayer = None
+		self.whiteTimer = self.timeControls[0]
+		self.blackTimer = self.timeControls[0]
+		self.whiteFreeSink = True
+		self.blackFreeSink = True
+
+		self.genMSBoard()
+
 
 class Lobby():
 	def __init__(self, server, lobbyClients):
@@ -91,12 +107,12 @@ class Lobby():
 		self.server = server
 		self.lobbyClients = lobbyClients
 
-	async def echoAll(self, client, args):
-		for c in self.server.clients:
-			await self.server.send(c, {
-				"action": "echoAll",
-				"args": args
-			})
+	# async def echoAll(self, client, args):
+	# 	for c in self.server.clients:
+	# 		await self.server.send(c, {
+	# 			"action": "echoAll",
+	# 			"args": args
+	# 		})
 
 	async def claimWhite(self, client):
 		error = self.gameState.setColor(client, "w")
@@ -110,10 +126,10 @@ class Lobby():
 			"args": {
 				"taken": True
 			}
-		}, exclude=[client])
+		}, self.lobbyClients, exclude=[client])
 
 		if self.gameState.whitePlayer and self.gameState.blackPlayer:
-			await self.server.sendAll({"action": "startGame"})
+			await self.server.sendAll({"action": "startGame"}, self.lobbyClients)
 
 		return {
 			"success": True
@@ -131,31 +147,32 @@ class Lobby():
 			"args": {
 				"taken": True
 			}
-		}, exclude=[client])
+		}, self.lobbyClients, exclude=[client])
 
 		if self.gameState.whitePlayer and self.gameState.blackPlayer:
-			await self.server.sendAll({"action": "startGame"})
+			await self.server.sendAll({"action": "startGame"}, self.lobbyClients)
 
 		return {
 			"success": True
 		}
 
-	async def resetBoard(self, client):
+	async def resetBoard(self, client, removePlayers=True):
 		if client == self.gameState.whitePlayer or client == self.gameState.blackPlayer:
-			self.gameState.__init__()
+			self.gameState.reset(removePlayers)
 			await self.server.sendAll({
 				"action": "resetBoard",
 				"args": {
 					"fen": self.gameState.game.fen(),
 					"mineCount": len(self.gameState.mineLocs),
 					"prevMove": self.gameState.prevMove,
+					"timeControls": self.gameState.timeControls,
 					"whitePlayer": bool(self.gameState.whitePlayer),
 					"blackPlayer": bool(self.gameState.blackPlayer)
 				}
-			})
+			}, self.lobbyClients)
 		else:
 			return {
-				"error": "Only registered players can reset the game."
+				"error": "Only black or white can reset the game."
 			}
 
 	async def move(self, client, args):
@@ -168,7 +185,7 @@ class Lobby():
 			self.gameState.prevMove = {}
 
 			extraInfo["turnCount"] = self.gameState.game.fullmove_number
-			if (self.gameState.game.ply()) % 20 == 0:
+			if (self.gameState.game.ply()) % (self.gameState.movesUntilReset * 2) == 0:
 				self.gameState.genMSBoard()
 				extraInfo["resetMS"] = True
 				self.gameState.whiteFreeSink = True
@@ -183,7 +200,7 @@ class Lobby():
 					},
 					"extraInfo": extraInfo
 				}
-			})
+			}, self.lobbyClients)
 		else:
 			self.gameState.game.push(chess.Move.from_uci(f'{args["move"]["from"]}{args["move"]["to"]}{args["move"]["promotion"] if "promotion" in args["move"] else ""}'))
 			self.gameState.prevMove = args["move"]
@@ -221,7 +238,7 @@ class Lobby():
 						"blackTimer": self.gameState.blackTimer
 					}
 				}
-			})
+			}, self.lobbyClients)
 
 	# async def resetMS(self, client):
 	# 	self.gameState.genMSBoard()
@@ -253,11 +270,50 @@ class Lobby():
 			"reveal": reveal
 		}
 
-	async def getControls(self, client):
+	async def updateSettings(self, client, args):
+		if not (client == self.gameState.whitePlayer or client == self.gameState.blackPlayer):
+			return {
+				"error": "Only black or white can update the game settings."
+			}
+		if args["startingTime"]:
+			if not (args["startingTime"].isdigit() and int(args["startingTime"]) > 0):
+				return {
+					"error": "Starting time must be a positive integer."
+				}
+			self.gameState.timeControls[0] = int(args["startingTime"])
+		if args["increment"]:
+			if not (args["increment"].isdigit() and int(args["increment"]) >= 0):
+				return {
+					"error": "Increment must be a non-negative integer."
+				}
+			self.gameState.timeControls[1] = int(args["increment"])
+		if args["mineCountPerSide"]:
+			if not (args["mineCountPerSide"].isdigit() and int(args["mineCountPerSide"]) >= 0):
+				return {
+					"error": "Increment must be a non-negative integer."
+				}
+			self.gameState.mineCount = int(args["mineCountPerSide"]) * 2
+		if args["movesUntilReset"]:
+			if not (args["movesUntilReset"].isdigit() and int(args["movesUntilReset"]) >= 0):
+				return {
+					"error": "Increment must be a non-negative integer."
+				}
+			self.gameState.movesUntilReset = int(args["movesUntilReset"])
+
+		await self.resetBoard(client, False)
+
 		return {
 			"success": True,
-			"timeControls": self.gameState.timeControls
+			"timeControls": self.gameState.timeControls,
+			"mineCount": self.gameState.mineCount,
+			"movesUntilReset": self.gameState.movesUntilReset
 		}
+
+	# async def getControls(self, client):
+	# 	return {
+	# 		"success": True,
+	# 		"timeControls": self.gameState.timeControls
+	# 	}
 
 
 class Server():
@@ -325,43 +381,44 @@ class Server():
 					await self.send(client, {"error": "Invalid packet format"})
 
 		except (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError):
-			lobbyOfClient = self.lobbies[self.clients[client]]
-			lobbyOfClient.lobbyClients.remove(client)
-			if len(lobbyOfClient.lobbyClients) == 0:
-				print("Closing lobby", self.clients[client])
-				del self.lobbies[self.clients[client]]
+			if not self.clients[client] == -1:
+				lobbyOfClient = self.lobbies[self.clients[client]]
+				lobbyOfClient.lobbyClients.remove(client)
+				if len(lobbyOfClient.lobbyClients) == 0:
+					print("Closing lobby", self.clients[client])
+					del self.lobbies[self.clients[client]]
+				clientGS = lobbyOfClient.gameState
+				if client == clientGS.whitePlayer:
+					clientGS.whitePlayer = None
+					clientGS.__init__()
+					await self.sendAll({
+						"action": "whiteClaimed",
+						"args": {
+							"taken": False,
+							"fen": clientGS.game.fen(),
+							"mineCount": clientGS.mineCount
+						}
+					}, lobbyOfClient.lobbyClients)
+				if client == clientGS.blackPlayer:
+					clientGS.blackPlayer = None
+					clientGS.__init__()
+					await self.sendAll({
+						"action": "blackClaimed",
+						"args": {
+							"taken": False,
+							"fen": clientGS.game.fen(),
+							"mineCount": clientGS.mineCount
+						}
+					}, lobbyOfClient.lobbyClients)
 			del self.clients[client]
 			# self.clients.remove(client)
-			clientGS = lobbyOfClient.gameState
-			if client == clientGS.whitePlayer:
-				clientGS.whitePlayer = None
-				clientGS.__init__()
-				await self.sendAll({
-					"action": "whiteClaimed",
-					"args": {
-						"taken": False,
-						"fen": clientGS.game.fen(),
-						"mineCount": clientGS.mineCount
-					}
-				})
-			if client == clientGS.blackPlayer:
-				clientGS.blackPlayer = None
-				clientGS.__init__()
-				await self.sendAll({
-					"action": "blackClaimed",
-					"args": {
-						"taken": False,
-						"fen": clientGS.game.fen(),
-						"mineCount": clientGS.mineCount
-					}
-				})
 			print('Client closed connection', client)
 
 	async def send(self, client, message):
 		await client.send(json.dumps(message))
 
-	async def sendAll(self, message, exclude=[]):
-		for c in self.clients:
+	async def sendAll(self, message, lobbyClients, exclude=[]):
+		for c in lobbyClients:
 			if not c in exclude:
 				await self.send(c, message)
 
@@ -390,6 +447,7 @@ class Server():
 			if not lobbyCode in self.lobbies:
 				break
 		self.addToLobby(client, lobbyCode)
+		print("Created new lobby", lobbyCode)
 		response = {
 			"lobbyCode": lobbyCode
 		}
@@ -416,6 +474,8 @@ class Server():
 				"fen": clientGS.game.fen(),
 				"mineCount": clientGS.mineCount,
 				"prevMove": clientGS.prevMove,
+				"timeControls": clientGS.timeControls,
+				"movesUntilReset": clientGS.movesUntilReset,
 				"whitePlayer": bool(clientGS.whitePlayer),
 				"blackPlayer": bool(clientGS.blackPlayer)
 			}
